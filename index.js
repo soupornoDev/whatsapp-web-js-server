@@ -10,13 +10,15 @@ const path = require('path');
 const PREFIX = '.';
 const BOT_NAME = process.env.BOT_NAME || 'Music Bot';
 const MAX_QUERY_LENGTH = 150;
-const MAX_DURATION_SECONDS = 15 * 60;
-const MAX_MP3_BYTES = 20 * 1024 * 1024;
+const MAX_DURATION_SECONDS = 15 * 60; // 15 Minutes limit
+const MAX_MP3_BYTES = 20 * 1024 * 1024; // 20 MB limit
+
 const REACTION = Object.freeze({
-    blocked: '\u{1F6AB}', menu: '\u{1F4CB}', ping: '\u{1F3D3}',
-    success: '\u{2705}', question: '\u{2753}', failure: '\u{274C}',
-    waiting: '\u{23F3}', searching: '\u{1F50E}', downloading: '\u{2B07}\u{FE0F}',
+    blocked: '🚫', menu: '📋', ping: '🏓',
+    success: '✅', question: '❓', failure: '❌',
+    waiting: '⏳', searching: '🔎', downloading: '⬇️',
 });
+
 const activeChats = new Set();
 let youtubePromise;
 
@@ -27,7 +29,15 @@ const client = new Client({
     }),
     puppeteer: {
         headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--disable-gpu'
+        ],
     },
     takeoverOnConflict: true,
     takeoverTimeoutMs: 0,
@@ -54,8 +64,6 @@ async function welcomeGroup(notification) {
 }
 
 client.on('message', (message) => {
-    // EventEmitter does not await async listeners. Catching here prevents a
-    // transient WhatsApp Web/Puppeteer error from terminating Node.js.
     void handleMessage(message).catch(logHandlerError);
 });
 
@@ -65,9 +73,6 @@ async function handleMessage(message) {
     const command = parseCommand(message.body);
     if (!command) return;
 
-    // Do not call message.getChat() here. whatsapp-web.js 1.34.7 can throw
-    // `r: r` from getChatById after a recent WhatsApp Web update. The group
-    // JID is already present in every inbound group message.
     const chatId = message.from;
     if (!chatId?.endsWith('@g.us')) {
         await message.react(REACTION.blocked).catch(() => {});
@@ -123,32 +128,49 @@ async function handlePlay(message, chatId, query) {
     try {
         await message.react(REACTION.searching);
         const youtube = await getYoutube();
-        const results = await youtube.search(query);
-        const video = results.videos.find((item) => item.duration.seconds > 0 && item.duration.seconds <= MAX_DURATION_SECONDS);
+        const searchResults = await youtube.search(query, { type: 'video' });
+        
+        const videos = searchResults.videos || searchResults.results || [];
+        const video = videos.find((item) => {
+            const duration = item.duration?.seconds || item.duration;
+            return duration && duration > 0 && duration <= MAX_DURATION_SECONDS;
+        });
+
         if (!video) {
             await message.react(REACTION.failure);
-            await replySafely(message, 'No playable result under 15 minutes was found. Try a more specific name.');
+            await replySafely(message, 'No playable result under 15 minutes was found. Try a more specific search.');
             return;
         }
 
+        const videoId = video.id || video.video_id;
+        const videoTitle = video.title?.text || video.title?.toString() || query;
+
         await message.react(REACTION.downloading);
-        await replySafely(message, `Downloading: *${video.title.text}*`);
-        mp3Path = path.join(os.tmpdir(), `whatsapp-play-${crypto.randomUUID()}.mp3`);
-        await downloadMp3(video.video_id, mp3Path);
+        await replySafely(message, `Downloading: *${videoTitle}*`);
+
+        mp3Path = path.join(os.tmpdir(), `play_${crypto.randomBytes(6).toString('hex')}.mp3`);
+        await downloadMp3(videoId, mp3Path);
 
         const media = MessageMedia.fromFilePath(mp3Path);
-        await withRetry(() => client.sendMessage(chatId, media, {
-            sendAudioAsVoice: false,
-            caption: `${video.title.text}\nhttps://www.youtube.com/watch?v=${video.video_id}`,
+        const chat = await message.getChat();
+
+        // অডিও ক্র্যাশ এড়াতে ডকুমেন্ট আকারে পাঠানো হচ্ছে
+        await withRetry(() => chat.sendMessage(media, {
+            sendMediaAsDocument: true
         }));
+
+        await replySafely(message, `🎵 *${videoTitle}*\n🔗 https://www.youtube.com/watch?v=${videoId}`);
         await message.react(REACTION.success);
+
     } catch (error) {
         console.error('.play failed:', error);
         await message.react(REACTION.failure).catch(() => {});
-        await replySafely(message, 'Sorry, I could not download that song. Please try another search.');
+        await replySafely(message, 'Sorry, I could not download or send that song. Please try again.');
     } finally {
         activeChats.delete(chatId);
-        if (mp3Path) await fsp.unlink(mp3Path).catch(() => {});
+        if (mp3Path) {
+            await fsp.unlink(mp3Path).catch(() => {});
+        }
     }
 }
 
@@ -165,23 +187,23 @@ async function getYoutube() {
 }
 
 async function downloadMp3(videoId, outputPath) {
-    const outputTemplate = outputPath.replace(/\.mp3$/i, '.%(ext)s');
-    await youtubedl(`https://www.youtube.com/watch?v=${videoId}`, {
+    const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+    
+    await youtubedl(videoUrl, {
         noPlaylist: true,
         format: 'bestaudio/best',
         extractAudio: true,
         audioFormat: 'mp3',
         audioQuality: '128K',
-        ffmpegLocation: path.dirname(ffmpegPath),
-        maxFilesize: '24M',
-        output: outputTemplate,
+        ffmpegLocation: ffmpegPath,
+        output: outputPath,
         noProgress: true,
         noWarnings: true,
     });
 
     const { size } = await fsp.stat(outputPath);
     if (size === 0 || size > MAX_MP3_BYTES) {
-        throw new Error('MP3 file is outside the allowed size limit.');
+        throw new Error('Downloaded file is empty or exceeds 20MB.');
     }
 }
 
@@ -189,11 +211,11 @@ function buildMenu() {
     return [
         `*${BOT_NAME} - Command Menu*`, '',
         `${PREFIX}play <song name>  - Search, download and send an MP3`,
-        `${PREFIX}menu              - Show this menu`,
-        `${PREFIX}help              - Show this menu`,
-        `${PREFIX}ping              - Check if the bot is online`,
-        `${PREFIX}status            - Show bot uptime`, '',
-        'The bot works in groups. Please use music you are permitted to download and share.',
+        `${PREFIX}menu               - Show this menu`,
+        `${PREFIX}help               - Show this menu`,
+        `${PREFIX}ping               - Check if the bot is online`,
+        `${PREFIX}status             - Show bot uptime`, '',
+        'Note: Works in WhatsApp groups only.',
     ].join('\n');
 }
 
@@ -204,9 +226,7 @@ function formatUptime(seconds) {
 }
 
 async function replySafely(message, text) {
-    return withRetry(() => client.sendMessage(message.from, text, {
-        quotedMessageId: message.id._serialized,
-    }));
+    return withRetry(() => message.reply(text));
 }
 
 async function withRetry(operation, attempts = 3) {
@@ -216,7 +236,7 @@ async function withRetry(operation, attempts = 3) {
             return await operation();
         } catch (error) {
             lastError = error;
-            if (attempt < attempts - 1) await delay(700 * (attempt + 1));
+            if (attempt < attempts - 1) await delay(1000 * (attempt + 1));
         }
     }
     throw lastError;
@@ -227,9 +247,7 @@ function delay(milliseconds) {
 }
 
 function logHandlerError(error) {
-    // WhatsApp Web may briefly invalidate an execution context while syncing.
-    // Log it instead of letting an async event handler become an unhandled rejection.
-    console.error('WhatsApp event handler failed:', error);
+    console.error('WhatsApp event handler error:', error);
 }
 
 async function shutdown(signal) {
@@ -241,4 +259,5 @@ async function shutdown(signal) {
 process.once('SIGINT', () => shutdown('SIGINT'));
 process.once('SIGTERM', () => shutdown('SIGTERM'));
 process.on('unhandledRejection', logHandlerError);
+
 client.initialize();
