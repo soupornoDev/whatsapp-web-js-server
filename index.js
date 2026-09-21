@@ -144,7 +144,29 @@ _Downloads are limited to 15 mins and 20 MB._`;
       return;
     }
 
-    // 4. .play
+    // 4. .tagall
+    if (lowerBody === ".tagall") {
+      try {
+        const chat = await msg.getChat();
+        if (!chat.isGroup) return;
+
+        let text = "";
+        let mentions = [];
+
+        for (let participant of chat.participants) {
+          mentions.push(participant.id._serialized);
+          text += `@${participant.id.user} `;
+        }
+
+        await chat.sendMessage(text, { mentions });
+      } catch (err) {
+        console.error("Tagall error:", err);
+        await msg.reply("❌ Failed to tag all members.");
+      }
+      return;
+    }
+
+    // 5. .play
     if (lowerBody.startsWith(".play")) {
       const songName = body.slice(5).trim();
       if (!songName) {
