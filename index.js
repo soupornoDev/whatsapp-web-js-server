@@ -135,6 +135,7 @@ client.on("message_create", async (msg) => {
 *Commands:*
 *.menu* or *.help* - Display this menu
 *.play <song name>* - Search YouTube and send as MP3
+*.tagall* - Tag everyone in the group
 *.ping* - Check bot availability
 *.status* - Show uptime
 
