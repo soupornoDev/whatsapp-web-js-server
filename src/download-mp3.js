@@ -1,69 +1,129 @@
 const ytDlp = require("youtube-dl-exec");
 const ffmpeg = require("ffmpeg-static");
-const ffprobe = require("ffprobe-static");
 const path = require("path");
 const fs = require("fs");
 
 /**
- * Downloads audio from a YouTube URL and converts it to MP3.
- * @param {string} videoUrl - The YouTube video URL.
- * @param {string} outputDir - Directory where the MP3 file will be saved.
- * @returns {Promise<string>} - Resolves to the absolute path of the generated MP3 file.
+ * Download YouTube audio and convert it to MP3.
+ *
+ * @param {string} videoUrl
+ * @param {string} outputDir
+ * @returns {Promise<string>}
  */
-export default async function downloadMp3(videoUrl, outputDir = path.join(process.cwd(), "downloads")) {
-  // Ensure destination directory exists
-  if (!fs.existsSync(outputDir)) {
-    fs.mkdirSync(outputDir, { recursive: true });
+async function downloadMp3(
+  videoUrl,
+  outputDir = path.join(process.cwd(), "downloads")
+) {
+  if (!videoUrl) {
+    throw new Error("YouTube URL is required.");
   }
 
-  // Define output pattern using yt-dlp template syntax
-  const outputTemplate = path.join(outputDir, "%(id)s.%(ext)s");
+  // Make sure output directory exists
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, {
+      recursive: true,
+    });
+  }
 
   try {
-    await ytDlp(videoUrl, {
-      extractAudio: true,
-      audioFormat: "mp3",
-      audioQuality: "192K",
-      output: outputTemplate,
-      ffmpegLocation: path.dirname(ffmpeg),
-      noPlaylist: true,
-    });
+    // ----------------------------------------
+    // Validate URL
+    // ----------------------------------------
 
-    // Extract Video ID from URL to construct final filename
     const urlObj = new URL(videoUrl);
-    let videoId = urlObj.searchParams.get("v");
 
-    // Handle shortened YouTube URLs (e.g., https://youtu.be/ID)
-    if (!videoId && urlObj.hostname === "youtu.be") {
-      videoId = urlObj.pathname.slice(1);
+    if (
+      !urlObj.hostname.includes("youtube.com") &&
+      !urlObj.hostname.includes("youtu.be")
+    ) {
+      throw new Error("Invalid YouTube URL.");
+    }
+
+    // ----------------------------------------
+    // Get YouTube Video ID
+    // ----------------------------------------
+
+    let videoId = null;
+
+    if (urlObj.hostname.includes("youtu.be")) {
+      videoId = urlObj.pathname.split("/")[1];
+    } else {
+      videoId = urlObj.searchParams.get("v");
     }
 
     if (!videoId) {
-      throw new Error("Could not determine YouTube video ID from URL.");
+      throw new Error("Could not determine YouTube video ID.");
     }
 
-    const expectedMp3Path = path.join(outputDir, `${videoId}.mp3`);
+    console.log(`YouTube Video ID: ${videoId}`);
 
-    if (!fs.existsSync(expectedMp3Path)) {
-      throw new Error(`File conversion completed, but expected file was not found: ${expectedMp3Path}`);
+    // ----------------------------------------
+    // Output path
+    // ----------------------------------------
+
+    const outputTemplate = path.join(
+      outputDir,
+      `${videoId}.%(ext)s`
+    );
+
+    const mp3Path = path.join(
+      outputDir,
+      `${videoId}.mp3`
+    );
+
+    // ----------------------------------------
+    // Download + Convert
+    // ----------------------------------------
+
+    console.log("Starting yt-dlp...");
+
+    await ytDlp(videoUrl, {
+      extractAudio: true,
+
+      audioFormat: "mp3",
+      audioQuality: "192K",
+
+      output: outputTemplate,
+
+      // ffmpeg-static gives the executable path
+      ffmpegLocation: path.dirname(ffmpeg),
+
+      noPlaylist: true,
+      noWarnings: true,
+
+      // Avoid downloading unnecessary files
+      noPart: true,
+    });
+
+    // ----------------------------------------
+    // Check MP3
+    // ----------------------------------------
+
+    if (!fs.existsSync(mp3Path)) {
+      throw new Error(
+        `MP3 file was not created:\n${mp3Path}`
+      );
     }
 
-    return expectedMp3Path;
+    const stats = fs.statSync(mp3Path);
+
+    if (stats.size === 0) {
+      throw new Error("Downloaded MP3 file is empty.");
+    }
+
+    console.log(`MP3 created: ${mp3Path}`);
+    console.log(`File size: ${(stats.size / 1024 / 1024).toFixed(2)} MB`);
+
+    return mp3Path;
+
   } catch (error) {
-    console.error("Error downloading/converting MP3:", error);
+    console.error(
+      "Error downloading/converting MP3:",
+      error.message
+    );
+
     throw error;
   }
 }
 
-// Example usage:
-(async () => {
-  try {
-    const songUrl = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
-    console.log("Starting download...");
-    
-    const filePath = await downloadMp3(songUrl);
-    console.log(`Successfully downloaded to: ${filePath}`);
-  } catch (err) {
-    console.error("Failed to download song:", err.message);
-  }
-})();
+module.exports = downloadMp3;

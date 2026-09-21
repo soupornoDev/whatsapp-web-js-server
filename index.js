@@ -7,6 +7,9 @@ const {
 const qrcode = require("qrcode-terminal");
 const ytSearch = require("yt-search");
 const downloadMp3 = require("./src/download-mp3");
+const fs = require("fs");
+
+const botName = process.env.BOT_NAME || "WhatsApp Music Bot";
 
 // ========================================
 // WhatsApp Client
@@ -32,7 +35,8 @@ const client = new Client({
 // ========================================
 
 client.on("qr", (qr) => {
-  console.log("Scan this QR code with WhatsApp:");
+  console.log("\nScan this QR code with WhatsApp:\n");
+
   qrcode.generate(qr, {
     small: true,
   });
@@ -51,7 +55,7 @@ client.on("loading_screen", (percent, message) => {
 // ========================================
 
 client.on("authenticated", () => {
-  console.log("WhatsApp authenticated successfully.");
+  console.log("✅ WhatsApp authenticated successfully.");
 });
 
 // ========================================
@@ -59,18 +63,25 @@ client.on("authenticated", () => {
 // ========================================
 
 client.on("auth_failure", (message) => {
-  console.error("Authentication failed:", message);
+  console.error("❌ Authentication failed:", message);
 });
 
 // ========================================
 // Ready
 // ========================================
 
+const startTime = Date.now();
+
 client.on("ready", () => {
+  console.log("\n=================================");
+  console.log(`       ${botName} Ready`);
   console.log("=================================");
-  console.log(" WhatsApp Bot is ready!");
-  console.log(" Type .play <song name>");
-  console.log("=================================");
+  console.log("Commands:");
+  console.log(" .menu / .help  - Show menu");
+  console.log(" .play <song>   - Play a song");
+  console.log(" .ping          - Check availability");
+  console.log(" .status        - Show uptime");
+  console.log("=================================\n");
 });
 
 // ========================================
@@ -78,76 +89,133 @@ client.on("ready", () => {
 // ========================================
 
 client.on("disconnected", (reason) => {
-  console.log("WhatsApp disconnected:", reason);
+  console.log("⚠️ WhatsApp disconnected:", reason);
 });
 
 // ========================================
 // Message Handler
 // ========================================
 
-client.on("message", async (msg) => {
+client.on("message_create", async (msg) => {
   try {
     const body = msg.body.trim();
 
-    // Ignore other messages
-    if (!body.toLowerCase().startsWith(".play")) {
+    // Commands only
+    if (!body.startsWith(".")) return;
+
+    // Check if group (handles both messages from other members and from the bot account)
+    const isGroup = msg.from.endsWith('@g.us') || (msg.fromMe && msg.to && msg.to.endsWith('@g.us'));
+    if (!isGroup) {
       return;
     }
 
-    // Get song name
-    const songName = body.slice(5).trim();
+    const chatId = msg.from.endsWith('@g.us') ? msg.from : msg.to;
+    const lowerBody = body.toLowerCase();
 
-    // Check song name
-    if (!songName) {
-      await msg.reply("❌ Usage: .play <song name>");
+    // 1. .ping
+    if (lowerBody === ".ping") {
+      await msg.reply("pong");
       return;
     }
 
-    console.log(`Searching for: ${songName}`);
-
-    // ========================================
-    // Search YouTube
-    // ========================================
-
-    const searchResults = await ytSearch(songName);
-
-    if (
-      !searchResults ||
-      !searchResults.videos ||
-      searchResults.videos.length === 0
-    ) {
-      await msg.reply("❌ Song not found.");
+    // 2. .status
+    if (lowerBody === ".status") {
+      const uptimeSec = Math.floor((Date.now() - startTime) / 1000);
+      const hours = Math.floor(uptimeSec / 3600);
+      const minutes = Math.floor((uptimeSec % 3600) / 60);
+      const seconds = uptimeSec % 60;
+      await msg.reply(`*Uptime:* ${hours}h ${minutes}m ${seconds}s`);
       return;
     }
 
-    // IMPORTANT:
-    // Get first video from search results
-    const song = searchResults.videos[0];
+    // 3. .menu or .help
+    if (lowerBody === ".menu" || lowerBody === ".help") {
+      const menuText = `*${botName}*
 
-    console.log(`Found: ${song.title}`);
-    console.log(`URL: ${song.url}`);
+*Commands:*
+*.menu* or *.help* - Display this menu
+*.play <song name>* - Search YouTube and send as MP3
+*.ping* - Check bot availability
+*.status* - Show uptime
 
-    // ========================================
-    // Download Message
-    // ========================================
+_Downloads are limited to 15 mins and 20 MB._`;
+      await msg.reply(menuText);
+      return;
+    }
 
-    await msg.reply(
-      `🎵 *Found:* ${song.title}\n\n` +
-      `⏳ Downloading MP3...\n` +
-      `Please wait...`
-    );
+    // 4. .play
+    if (lowerBody.startsWith(".play")) {
+      const songName = body.slice(5).trim();
+      if (!songName) {
+        await msg.reply("❌ Usage: .play <song name>");
+        return;
+      }
 
-    // ========================================
-    // Download MP3
-    // ========================================
+      console.log(`Searching for: ${songName}`);
+      await msg.react("🔍");
 
-    const filePath = await downloadMp3(song.url);
+      const searchResults = await ytSearch(songName);
+      if (!searchResults || !searchResults.videos || searchResults.videos.length === 0) {
+        await msg.react("❌");
+        await msg.reply("❌ Song not found.");
+        return;
+      }
 
-    const media = MessageMedia.fromFilePath(filePath);
-    await msg.reply(media,msg.from);
+      const song = searchResults.videos[0];
+      
+      // Limit to 15 minutes
+      if (song.duration.seconds > 15 * 60) {
+        await msg.react("❌");
+        await msg.reply(`❌ Song is too long (${song.duration.timestamp}). Limit is 15 minutes.`);
+        return;
+      }
+
+      await msg.react("⬇️");
+      
+      let filePath;
+      try {
+        filePath = await downloadMp3(song.url);
+      } catch (err) {
+        console.error("Download error:", err);
+        await msg.react("❌");
+        await msg.reply("❌ Failed to download the song.");
+        return;
+      }
+
+      try {
+        // Check file size (20 MB limit)
+        const stats = fs.statSync(filePath);
+        const sizeMB = stats.size / (1024 * 1024);
+        if (sizeMB > 20) {
+          await msg.react("❌");
+          await msg.reply(`❌ File is too large (${sizeMB.toFixed(2)} MB). Limit is 20 MB.`);
+          return;
+        }
+
+        await msg.react("✅");
+
+        const media = MessageMedia.fromFilePath(filePath);
+        
+        // Send MP3 to the group chat
+        try {
+          await msg.reply(media);
+        } catch (replyErr) {
+          console.warn("msg.reply failed, falling back to client.sendMessage:", replyErr.message);
+          await client.sendMessage(chatId, media);
+        }
+      } finally {
+        // Clean up the downloaded MP3 file
+        if (filePath && fs.existsSync(filePath)) {
+          try {
+            fs.unlinkSync(filePath);
+          } catch (cleanupErr) {
+            console.error("Cleanup error:", cleanupErr);
+          }
+        }
+      }
+    }
   } catch (error) {
     console.error("Error processing message:", error);
-    await msg.reply("❌ Failed to download the song. Please try again later.");
   }
 });
 
