@@ -2,6 +2,10 @@
 import { useState } from "react";
 
 export default function Home() {
+
+  function app(){
+    
+  }
   const [qrUrl, setQrUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);

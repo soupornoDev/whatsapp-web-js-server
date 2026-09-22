@@ -9,7 +9,7 @@ const fs = require("fs");
 const path = require("path");
 
 // Fix path for download-mp3 since we moved it
-const downloadMp3 = require("./src/bot-src/download-mp3");
+const downloadMp3 = require("../bot-src/download-mp3");
 
 const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
 
@@ -223,51 +223,3 @@ client.on("message_create", async (msg) => {
   }
 });
 
-// Start the Next.js app and the Bot
-app.prepare().then(() => {
-  client.initialize();
-
-  createServer(async (req, res) => {
-    try {
-      const parsedUrl = parse(req.url, true);
-      const { pathname } = parsedUrl;
-
-      // Intercept /api/qr
-      if (pathname === "/api/qr") {
-        // Add CORS headers for Vercel deployment
-        res.setHeader("Access-Control-Allow-Origin", "*");
-        res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-        res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-
-        if (req.method === "OPTIONS") {
-          res.writeHead(200);
-          res.end();
-          return;
-        }
-
-        if (currentQr) {
-          const qrPngBuffer = qrImage.imageSync(currentQr, { type: "png", margin: 4, size: 10 });
-          res.writeHead(200, {
-            "Content-Type": "image/png",
-            "Content-Length": qrPngBuffer.length,
-          });
-          res.end(qrPngBuffer);
-        } else {
-          res.writeHead(404, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "No QR Code available. Bot might be already logged in." }));
-        }
-        return;
-      }
-
-      // Default Next.js routing
-      await handle(req, res, parsedUrl);
-    } catch (err) {
-      console.error("Error occurred handling", req.url, err);
-      res.statusCode = 500;
-      res.end("internal server error");
-    }
-  }).listen(port, (err) => {
-    if (err) throw err;
-    console.log(`> Ready on http://${hostname}:${port}`);
-  });
-});

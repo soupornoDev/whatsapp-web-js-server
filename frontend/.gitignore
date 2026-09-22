@@ -39,10 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
-<<<<<<< HEAD
-=======
 
 .wwebjs_auth/
 .wwebjs_cache/
-downloads/
->>>>>>> 1903d23 (feat: add global styles and layout for Next.js app)
