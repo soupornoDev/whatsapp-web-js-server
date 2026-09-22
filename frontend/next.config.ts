@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  serverExternalPackages: ["whatsapp-web.js", "unzipper", "youtube-dl-exec", "ffmpeg-static", "qr-image"],
 };
 
 export default nextConfig;

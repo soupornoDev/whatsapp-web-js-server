@@ -8,15 +8,43 @@ const ytSearch = require("yt-search");
 const fs = require("fs");
 const path = require("path");
 
-// Fix path for download-mp3 since we moved it
-const downloadMp3 = require("./src/bot-src/download-mp3");
+// Load environment variables from .env if present
+const envFiles = [path.join(__dirname, ".env"), path.join(__dirname, "frontend", ".env")];
+for (const envFile of envFiles) {
+  if (fs.existsSync(envFile)) {
+    const content = fs.readFileSync(envFile, "utf-8");
+    for (const line of content.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const eqIdx = trimmed.indexOf("=");
+      if (eqIdx > 0) {
+        const key = trimmed.slice(0, eqIdx).trim();
+        let val = trimmed.slice(eqIdx + 1).trim();
+        if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+          val = val.slice(1, -1);
+        }
+        if (!process.env[key]) {
+          process.env[key] = val;
+        }
+      }
+    }
+  }
+}
+
+// Support both naming conventions for Email credentials
+const emailUser = process.env.EMAIL_USER || process.env.GMAIL_USER;
+const emailPass = process.env.EMAIL_PASS || process.env.GMAIL_APP_PASSWORD;
+const emailTo = process.env.EMAIL_TO || process.env.TO_EMAIL || emailUser;
+
+// Fix path for download-mp3
+const downloadMp3 = require("./bot-src/download-mp3");
 
 const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
 
 const dev = process.env.NODE_ENV !== "production";
-const hostname = "localhost";
-const port = process.env.PORT || 3000;
-const app = next({ dev, hostname, port });
+const hostname = process.env.HOSTNAME || "0.0.0.0";
+const port = parseInt(process.env.PORT, 10) || 3000;
+const app = next({ dev, hostname, port, dir: "./frontend" });
 const handle = app.getRequestHandler();
 
 const botName = process.env.BOT_NAME || "WhatsApp Music Bot";
@@ -28,17 +56,24 @@ const client = new Client({
   }),
   puppeteer: {
     headless: true,
-    executablePath: process.env.CHROME_BIN || undefined,
+    executablePath: process.env.CHROME_BIN || process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
       "--disable-dev-shm-usage",
+      "--disable-accelerated-2d-canvas",
+      "--no-first-run",
+      "--no-zygote",
+      "--single-process",
+      "--disable-gpu",
     ],
   },
 });
 
 client.on("qr", async (qr) => {
-  console.log("\nScan this QR code with WhatsApp:\n");
+  console.log("\n=================================");
+  console.log("Scan this QR code with WhatsApp:");
+  console.log("=================================\n");
   currentQr = qr;
 
   qrcode.generate(qr, { small: true });
@@ -46,24 +81,28 @@ client.on("qr", async (qr) => {
   try {
     const qrPngBuffer = qrImage.imageSync(qr, { type: "png" });
 
-    const transporter = nodemailer.createTransport({
-      service: "gmail",
-      auth: {
-        user: process.env.EMAIL_USER || "your_email@gmail.com",
-        pass: process.env.EMAIL_PASS || "your_app_password",
-      },
-    });
+    if (emailUser && emailPass && !emailUser.includes("your_email") && !emailPass.includes("your_app_password")) {
+      const transporter = nodemailer.createTransport({
+        service: "gmail",
+        auth: {
+          user: emailUser,
+          pass: emailPass,
+        },
+      });
 
-    const mailOptions = {
-      from: process.env.EMAIL_USER || "your_email@gmail.com",
-      to: process.env.EMAIL_TO || "receiver_email@gmail.com",
-      subject: "WhatsApp Bot QR Code",
-      text: "Here is your new WhatsApp Bot login QR Code. Scan it within 1 minute.",
-      attachments: [{ filename: "qrcode.png", content: qrPngBuffer }],
-    };
+      const mailOptions = {
+        from: emailUser,
+        to: emailTo,
+        subject: "WhatsApp Bot QR Code",
+        text: "Here is your new WhatsApp Bot login QR Code. Scan it within 1 minute.",
+        attachments: [{ filename: "qrcode.png", content: qrPngBuffer }],
+      };
 
-    await transporter.sendMail(mailOptions);
-    console.log("✅ QR Code sent to email successfully!");
+      await transporter.sendMail(mailOptions);
+      console.log(`✅ QR Code sent to email (${emailTo}) successfully!`);
+    } else {
+      console.log("ℹ️ Email credentials not configured or incomplete; skipping QR email.");
+    }
   } catch (error) {
     console.error("❌ Failed to send QR Code email:", error.message);
   }
@@ -85,6 +124,7 @@ client.on("auth_failure", (message) => {
 const startTime = Date.now();
 
 client.on("ready", () => {
+  currentQr = null;
   console.log("\n=================================");
   console.log(`       ${botName} Ready`);
   console.log("=================================");
@@ -99,6 +139,7 @@ client.on("ready", () => {
 
 client.on("disconnected", (reason) => {
   console.log("⚠️ WhatsApp disconnected:", reason);
+  currentQr = null;
 });
 
 client.on("message_create", async (msg) => {
@@ -171,7 +212,7 @@ client.on("message_create", async (msg) => {
       }
 
       const song = searchResults.videos[0];
-      
+
       if (song.duration.seconds > 15 * 60) {
         await msg.react("❌");
         await msg.reply(`❌ Song is too long (${song.duration.timestamp}). Limit is 15 minutes.`);
@@ -179,7 +220,7 @@ client.on("message_create", async (msg) => {
       }
 
       await msg.react("⬇️");
-      
+
       let filePath;
       try {
         filePath = await downloadMp3(song.url);
@@ -223,3 +264,59 @@ client.on("message_create", async (msg) => {
   }
 });
 
+app.prepare().then(() => {
+  createServer(async (req, res) => {
+    try {
+      const parsedUrl = parse(req.url, true);
+
+      // Health check endpoint for Render/Cloud monitoring
+      if (parsedUrl.pathname === '/health') {
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ status: 'ok', uptime: process.uptime() }));
+        return;
+      }
+
+      // QR Code endpoint for frontend
+      if (parsedUrl.pathname === '/api/qr') {
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+
+        if (req.method === 'OPTIONS') {
+          res.statusCode = 200;
+          res.end();
+          return;
+        }
+
+        if (currentQr) {
+          try {
+            const qrPngBuffer = qrImage.imageSync(currentQr, { type: "png" });
+            const qrDataUrl = `data:image/png;base64,${qrPngBuffer.toString('base64')}`;
+            res.end(JSON.stringify({ qrUrl: qrDataUrl, status: 'qr' }));
+          } catch (e) {
+            res.end(JSON.stringify({ error: 'Failed to generate QR image' }));
+          }
+        } else {
+          res.end(JSON.stringify({
+            qrUrl: null,
+            status: client.info ? 'ready' : 'initializing',
+            message: client.info ? 'Bot is already authenticated and ready!' : 'Waiting for QR code generation...'
+          }));
+        }
+        return;
+      }
+
+      await handle(req, res, parsedUrl);
+    } catch (err) {
+      console.error('Error occurred handling', req.url, err);
+      res.statusCode = 500;
+      res.end('internal server error');
+    }
+  }).listen(port, "0.0.0.0", () => {
+    console.log(`> Ready on http://0.0.0.0:${port}`);
+  });
+
+  client.initialize().catch(err => {
+    console.error("Failed to initialize WhatsApp client:", err);
+  });
+});

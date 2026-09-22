@@ -1,11 +1,8 @@
 "use client";
 import { useState } from "react";
+import wwjsBot from "@/lib/wwjs";
 
 export default function Home() {
-
-  function app(){
-    
-  }
   const [qrUrl, setQrUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -14,10 +11,22 @@ export default function Home() {
     setLoading(true);
     setError(null);
     try {
-      wwjsBot()
-    } catch (error) {
-      
+      const res = await wwjsBot();
+      if (res && res.success && res.qrUrl) {
+        setQrUrl(res.qrUrl);
+      } else if (res && res.status === "ready") {
+        setQrUrl(null);
+        setError("Bot is already authenticated and ready!");
+      } else {
+        setQrUrl(null);
+        setError(res?.error || "Failed to generate QR code. Please try again.");
+      }
+    } catch (err: any) {
+      setError(err.message || "An unexpected error occurred.");
+    } finally {
+      setLoading(false);
     }
+  };
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center bg-gray-900 text-white p-6">
@@ -59,7 +68,3 @@ export default function Home() {
     </main>
   );
 }
-  function wwjsBot() {
-    throw new Error("Function not implemented.");
-  }
-

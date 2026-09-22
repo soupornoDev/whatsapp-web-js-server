@@ -24,6 +24,9 @@ RUN npm install
 # Copy app source code
 COPY . .
 
+# Install frontend dependencies and create Next.js production build
+RUN cd frontend && npm install && npm run build
+
 # Expose the port for the health check server
 EXPOSE 3000
 

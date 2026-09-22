@@ -217,9 +217,43 @@ client.on("message_create", async (msg) => {
           }
         }
       }
-    }
   } catch (error) {
     console.error("Error processing message:", error);
   }
 });
 
+app.prepare().then(() => {
+  createServer(async (req, res) => {
+    try {
+      const parsedUrl = parse(req.url, true);
+      
+      if (parsedUrl.pathname === '/api/qr') {
+        res.setHeader('Content-Type', 'application/json');
+        if (currentQr) {
+          try {
+            const qrPngBuffer = qrImage.imageSync(currentQr, { type: "png" });
+            const qrDataUrl = `data:image/png;base64,${qrPngBuffer.toString('base64')}`;
+            res.end(JSON.stringify({ qrUrl: qrDataUrl }));
+          } catch (e) {
+            res.end(JSON.stringify({ error: 'Failed to generate QR image' }));
+          }
+        } else {
+          res.end(JSON.stringify({ qrUrl: null, info: client.info ? 'Authenticated' : 'Waiting' }));
+        }
+        return;
+      }
+
+      await handle(req, res, parsedUrl);
+    } catch (err) {
+      console.error('Error occurred handling', req.url, err);
+      res.statusCode = 500;
+      res.end('internal server error');
+    }
+  }).listen(port, () => {
+    console.log(`> Ready on http://${hostname}:${port}`);
+  });
+
+  client.initialize().catch(err => {
+    console.error("Failed to initialize WhatsApp client:", err);
+  });
+});
