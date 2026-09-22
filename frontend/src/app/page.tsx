@@ -14,26 +14,10 @@ export default function Home() {
     setLoading(true);
     setError(null);
     try {
-      // Adding a timestamp to prevent browser caching of the QR code image
-      const timestamp = new Date().getTime();
-      const apiUrl = process.env.NEXT_PUBLIC_BOT_API_URL || "http://localhost:3000";
-      const res = await fetch(`${apiUrl}/api/qr?t=${timestamp}`);
+      wwjsBot()
+    } catch (error) {
       
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || "Failed to fetch QR code");
-      }
-      
-      const blob = await res.blob();
-      const objectUrl = URL.createObjectURL(blob);
-      setQrUrl(objectUrl);
-    } catch (err: any) {
-      setError(err.message);
-      setQrUrl(null);
-    } finally {
-      setLoading(false);
     }
-  };
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center bg-gray-900 text-white p-6">
@@ -75,3 +59,7 @@ export default function Home() {
     </main>
   );
 }
+  function wwjsBot() {
+    throw new Error("Function not implemented.");
+  }
+
