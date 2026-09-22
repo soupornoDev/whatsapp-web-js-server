@@ -1,0 +1,11 @@
+console.log("==================================================================");
+console.log("✅ The Bot and Website have been successfully MERGED into one app!");
+console.log("==================================================================");
+console.log("");
+console.log("How to run your Bot + Website now:");
+console.log("  cd frontend");
+console.log("  npm run dev");
+console.log("");
+console.log("The website will be available at http://localhost:3000");
+console.log("And your bot will automatically start in the background!");
+console.log("==================================================================");
