@@ -7,6 +7,8 @@ const qrcode = require("qrcode-terminal");
 const ytSearch = require("yt-search");
 const fs = require("fs");
 const path = require("path");
+const {TelegramClient} = require("telegram");
+const { StringSession } = require("telegram/sessions");
 
 // Fix path for download-mp3 since we moved it
 const downloadMp3 = require("../bot-src/download-mp3");
@@ -217,10 +219,7 @@ client.on("message_create", async (msg) => {
           }
         }
       }
-  } catch (error) {
-    console.error("Error processing message:", error);
   }
-});
 
 app.prepare().then(() => {
   createServer(async (req, res) => {

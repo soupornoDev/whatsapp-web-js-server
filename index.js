@@ -1,62 +1,64 @@
-const { createServer } = require("http");
-const { parse } = require("url");
-const next = require("next");
+const fs = require("fs");
+const path = require("path");
+require("dotenv").config();
 const qrImage = require("qr-image");
 const nodemailer = require("nodemailer");
 const qrcode = require("qrcode-terminal");
 const ytSearch = require("yt-search");
-const fs = require("fs");
-const path = require("path");
 
-// Load environment variables from .env if present
-const envFiles = [path.join(__dirname, ".env"), path.join(__dirname, "frontend", ".env")];
-for (const envFile of envFiles) {
-  if (fs.existsSync(envFile)) {
-    const content = fs.readFileSync(envFile, "utf-8");
-    for (const line of content.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) continue;
-      const eqIdx = trimmed.indexOf("=");
-      if (eqIdx > 0) {
-        const key = trimmed.slice(0, eqIdx).trim();
-        let val = trimmed.slice(eqIdx + 1).trim();
-        if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-          val = val.slice(1, -1);
-        }
-        if (!process.env[key]) {
-          process.env[key] = val;
-        }
-      }
-    }
-  }
-}
+const {
+  Client,
+  LocalAuth,
+  MessageMedia,
+} = require("whatsapp-web.js");
 
-// Support both naming conventions for Email credentials
-const emailUser = process.env.EMAIL_USER || process.env.GMAIL_USER;
-const emailPass = process.env.EMAIL_PASS || process.env.GMAIL_APP_PASSWORD;
-const emailTo = process.env.EMAIL_TO || process.env.TO_EMAIL || emailUser;
-
-// Fix path for download-mp3
 const downloadMp3 = require("./bot-src/download-mp3");
 
-const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
-
-const dev = process.env.NODE_ENV !== "production";
-const hostname = process.env.HOSTNAME || "0.0.0.0";
-const port = parseInt(process.env.PORT, 10) || 3000;
-const app = next({ dev, hostname, port, dir: "./frontend" });
-const handle = app.getRequestHandler();
+// ==========================================
+// CONFIG
+// ==========================================
 
 const botName = process.env.BOT_NAME || "WhatsApp Music Bot";
+
+const emailUser =
+  process.env.EMAIL_USER ||
+  process.env.GMAIL_USER;
+
+const emailPass =
+  process.env.EMAIL_PASS ||
+  process.env.GMAIL_APP_PASSWORD;
+
+const emailTo =
+  process.env.EMAIL_TO ||
+  process.env.TO_EMAIL ||
+  emailUser;
+
+const MAX_DURATION_SECONDS = 15 * 60;
+const MAX_FILE_SIZE_MB = 20;
+const MAX_FILE_SIZE_BYTES =
+  MAX_FILE_SIZE_MB * 1024 * 1024;
+
 let currentQr = null;
+
+const startTime = Date.now();
+
+// ==========================================
+// WHATSAPP CLIENT
+// ==========================================
 
 const client = new Client({
   authStrategy: new LocalAuth({
     clientId: "whatsapp-bot",
   }),
+
   puppeteer: {
     headless: true,
-    executablePath: process.env.CHROME_BIN || process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+
+    executablePath:
+      process.env.CHROME_BIN ||
+      process.env.PUPPETEER_EXECUTABLE_PATH ||
+      undefined,
+
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
@@ -64,259 +66,579 @@ const client = new Client({
       "--disable-accelerated-2d-canvas",
       "--no-first-run",
       "--no-zygote",
-      "--single-process",
       "--disable-gpu",
     ],
   },
 });
 
+// ==========================================
+// QR CODE
+// ==========================================
+
 client.on("qr", async (qr) => {
   console.log("\n=================================");
   console.log("Scan this QR code with WhatsApp:");
   console.log("=================================\n");
+
   currentQr = qr;
 
-  qrcode.generate(qr, { small: true });
+  qrcode.generate(qr, {
+    small: true,
+  });
 
   try {
-    const qrPngBuffer = qrImage.imageSync(qr, { type: "png" });
+    const qrPngBuffer = qrImage.imageSync(qr, {
+      type: "png",
+    });
 
-    if (emailUser && emailPass && !emailUser.includes("your_email") && !emailPass.includes("your_app_password")) {
-      const transporter = nodemailer.createTransport({
-        service: "gmail",
-        auth: {
-          user: emailUser,
-          pass: emailPass,
-        },
-      });
+    const validEmailConfig =
+      emailUser &&
+      emailPass &&
+      !emailUser.includes("your_email") &&
+      !emailPass.includes("your_app_password");
 
-      const mailOptions = {
-        from: emailUser,
-        to: emailTo,
-        subject: "WhatsApp Bot QR Code",
-        text: "Here is your new WhatsApp Bot login QR Code. Scan it within 1 minute.",
-        attachments: [{ filename: "qrcode.png", content: qrPngBuffer }],
-      };
-
-      await transporter.sendMail(mailOptions);
-      console.log(`✅ QR Code sent to email (${emailTo}) successfully!`);
-    } else {
-      console.log("ℹ️ Email credentials not configured or incomplete; skipping QR email.");
+    if (!validEmailConfig) {
+      console.log(
+        "ℹ️ Email credentials not configured; skipping QR email."
+      );
+      return;
     }
+
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: emailUser,
+        pass: emailPass,
+      },
+    });
+
+    await transporter.sendMail({
+      from: emailUser,
+      to: emailTo,
+      subject: `${botName} - WhatsApp QR Code`,
+      text:
+        "Here is your new WhatsApp Bot login QR Code. " +
+        "Please scan it within 1 minute.",
+
+      attachments: [
+        {
+          filename: "qrcode.png",
+          content: qrPngBuffer,
+        },
+      ],
+    });
+
+    console.log(
+      `✅ QR Code sent to email (${emailTo}) successfully!`
+    );
   } catch (error) {
-    console.error("❌ Failed to send QR Code email:", error.message);
+    console.error(
+      "❌ Failed to send QR Code email:",
+      error.message
+    );
   }
 });
 
+// ==========================================
+// LOADING
+// ==========================================
+
 client.on("loading_screen", (percent, message) => {
-  console.log(`Loading: ${percent}% - ${message}`);
+  console.log(
+    `Loading: ${percent}% - ${message}`
+  );
 });
+
+// ==========================================
+// AUTHENTICATED
+// ==========================================
 
 client.on("authenticated", () => {
   currentQr = null;
-  console.log("✅ WhatsApp authenticated successfully.");
+
+  console.log(
+    "✅ WhatsApp authenticated successfully."
+  );
 });
+
+// ==========================================
+// AUTH FAILURE
+// ==========================================
 
 client.on("auth_failure", (message) => {
-  console.error("❌ Authentication failed:", message);
+  console.error(
+    "❌ Authentication failed:",
+    message
+  );
 });
 
-const startTime = Date.now();
+// ==========================================
+// READY
+// ==========================================
 
 client.on("ready", () => {
   currentQr = null;
+
   console.log("\n=================================");
   console.log(`       ${botName} Ready`);
   console.log("=================================");
+
   console.log("Commands:");
   console.log(" .menu / .help  - Show menu");
   console.log(" .play <song>   - Play a song");
   console.log(" .tagall        - Tag everyone in group");
   console.log(" .ping          - Check availability");
   console.log(" .status        - Show uptime");
+
   console.log("=================================\n");
 });
 
+// ==========================================
+// DISCONNECTED
+// ==========================================
+
 client.on("disconnected", (reason) => {
-  console.log("⚠️ WhatsApp disconnected:", reason);
+  console.log(
+    "⚠️ WhatsApp disconnected:",
+    reason
+  );
+
   currentQr = null;
 });
 
+// ==========================================
+// MESSAGE HANDLER
+// ==========================================
+
 client.on("message_create", async (msg) => {
   try {
+    // Ignore empty messages
+    if (!msg || !msg.body) {
+      return;
+    }
+
     const body = msg.body.trim();
-    if (!body.startsWith(".")) return;
 
-    const isGroup = msg.from.endsWith("@g.us") || (msg.fromMe && msg.to && msg.to.endsWith("@g.us"));
-    if (!isGroup) return;
+    // Only commands beginning with "."
+    if (!body.startsWith(".")) {
+      return;
+    }
 
-    const chatId = msg.from.endsWith("@g.us") ? msg.from : msg.to;
+    // ------------------------------------------
+    // GROUP ONLY
+    // ------------------------------------------
+
+    const isGroup =
+      msg.from?.endsWith("@g.us") ||
+      (
+        msg.fromMe &&
+        msg.to &&
+        msg.to.endsWith("@g.us")
+      );
+
+    if (!isGroup) {
+      return;
+    }
+
+    const chatId = msg.from?.endsWith("@g.us")
+      ? msg.from
+      : msg.to;
+
+    if (!chatId) {
+      return;
+    }
+
     const lowerBody = body.toLowerCase();
 
+    // ==========================================
+    // PING
+    // ==========================================
+
     if (lowerBody === ".ping") {
-      await msg.reply("pong");
+      await msg.reply("🏓 pong");
       return;
     }
+
+    // ==========================================
+    // STATUS
+    // ==========================================
 
     if (lowerBody === ".status") {
-      const uptimeSec = Math.floor((Date.now() - startTime) / 1000);
-      const hours = Math.floor(uptimeSec / 3600);
-      const minutes = Math.floor((uptimeSec % 3600) / 60);
+      const uptimeSec = Math.floor(
+        (Date.now() - startTime) / 1000
+      );
+
+      const hours = Math.floor(
+        uptimeSec / 3600
+      );
+
+      const minutes = Math.floor(
+        (uptimeSec % 3600) / 60
+      );
+
       const seconds = uptimeSec % 60;
-      await msg.reply(`*Uptime:* ${hours}h ${minutes}m ${seconds}s`);
+
+      await msg.reply(
+        `*${botName} Status*\n\n` +
+        `🟢 Online\n` +
+        `⏱️ Uptime: ${hours}h ${minutes}m ${seconds}s`
+      );
+
       return;
     }
 
-    if (lowerBody === ".menu" || lowerBody === ".help") {
-      const menuText = `*${botName}*\n\n*Commands:*\n*.menu* or *.help* - Display this menu\n*.play <song name>* - Search YouTube and send as MP3\n*.tagall* - Tag everyone in the group\n*.ping* - Check bot availability\n*.status* - Show uptime\n\n_Downloads are limited to 15 mins and 20 MB._`;
+    // ==========================================
+    // MENU
+    // ==========================================
+
+    if (
+      lowerBody === ".menu" ||
+      lowerBody === ".help"
+    ) {
+      const menuText =
+        `*${botName}*\n\n` +
+        `*Commands:*\n\n` +
+        `🎵 *.play <song name>*\n` +
+        `Search YouTube and send the song as MP3.\n\n` +
+        `👥 *.tagall*\n` +
+        `Mention everyone in the group.\n\n` +
+        `🏓 *.ping*\n` +
+        `Check bot availability.\n\n` +
+        `📊 *.status*\n` +
+        `Show bot uptime.\n\n` +
+        `📖 *.menu* / *.help*\n` +
+        `Show this menu.\n\n` +
+        `_Download limit: ${MAX_DURATION_SECONDS / 60} minutes / ${MAX_FILE_SIZE_MB} MB_`;
+
       await msg.reply(menuText);
       return;
     }
 
+    // ==========================================
+    // TAG ALL
+    // ==========================================
+
     if (lowerBody === ".tagall") {
       try {
         const chat = await msg.getChat();
-        if (!chat.isGroup) return;
 
-        let text = "";
-        let mentions = [];
-
-        for (let participant of chat.participants) {
-          mentions.push(participant.id._serialized);
-          text += `@${participant.id.user} `;
+        if (!chat.isGroup) {
+          await msg.reply(
+            "❌ This command only works in groups."
+          );
+          return;
         }
 
-        await chat.sendMessage(text, { mentions });
-      } catch (err) {
-        console.error("Tagall error:", err);
-        await msg.reply("❌ Failed to tag all members.");
+        const participants = chat.participants || [];
+
+        if (participants.length === 0) {
+          await msg.reply(
+            "❌ No group members found."
+          );
+          return;
+        }
+
+        const mentions = [];
+
+        let text =
+          `📢 *Attention Everyone!*\n\n`;
+
+        for (const participant of participants) {
+          const id =
+            participant.id?._serialized;
+
+          if (!id) {
+            continue;
+          }
+
+          mentions.push(id);
+
+          const username =
+            participant.id?.user || "member";
+
+          text += `@${username} `;
+        }
+
+        await chat.sendMessage(text, {
+          mentions,
+        });
+
+        console.log(
+          `✅ Tagged ${mentions.length} members.`
+        );
+      } catch (error) {
+        console.error(
+          "❌ Tagall error:",
+          error
+        );
+
+        try {
+          await msg.reply(
+            "❌ Failed to tag all members."
+          );
+        } catch {}
       }
+
       return;
     }
 
-    if (lowerBody.startsWith(".play")) {
-      const songName = body.slice(5).trim();
+    // ==========================================
+    // PLAY
+    // ==========================================
+
+    if (
+      lowerBody === ".play" ||
+      lowerBody.startsWith(".play ")
+    ) {
+      const songName = body
+        .slice(5)
+        .trim();
+
       if (!songName) {
-        await msg.reply("❌ Usage: .play <song name>");
+        await msg.reply(
+          "❌ Usage: .play <song name>"
+        );
         return;
       }
 
-      console.log(`Searching for: ${songName}`);
-      await msg.react("🔍");
-
-      const searchResults = await ytSearch(songName);
-      if (!searchResults || !searchResults.videos || searchResults.videos.length === 0) {
-        await msg.react("❌");
-        await msg.reply("❌ Song not found.");
-        return;
-      }
-
-      const song = searchResults.videos[0];
-
-      if (song.duration.seconds > 15 * 60) {
-        await msg.react("❌");
-        await msg.reply(`❌ Song is too long (${song.duration.timestamp}). Limit is 15 minutes.`);
-        return;
-      }
-
-      await msg.react("⬇️");
-
-      let filePath;
-      try {
-        filePath = await downloadMp3(song.url);
-      } catch (err) {
-        console.error("Download error:", err);
-        await msg.react("❌");
-        await msg.reply("❌ Failed to download the song.");
-        return;
-      }
+      let filePath = null;
 
       try {
-        const stats = fs.statSync(filePath);
-        const sizeMB = stats.size / (1024 * 1024);
-        if (sizeMB > 20) {
+        // --------------------------------------
+        // SEARCH
+        // --------------------------------------
+
+        console.log(
+          `🔍 Searching for: ${songName}`
+        );
+
+        await msg.react("🔍");
+
+        const searchResults =
+          await ytSearch(songName);
+
+        if (
+          !searchResults ||
+          !searchResults.videos ||
+          searchResults.videos.length === 0
+        ) {
           await msg.react("❌");
-          await msg.reply(`❌ File is too large (${sizeMB.toFixed(2)} MB). Limit is 20 MB.`);
+
+          await msg.reply(
+            "❌ Song not found."
+          );
+
           return;
         }
+
+        const song =
+          searchResults.videos[0];
+
+        console.log(
+          `🎵 Found: ${song.title}`
+        );
+
+        console.log(
+          `🔗 URL: ${song.url}`
+        );
+
+        // --------------------------------------
+        // DURATION CHECK
+        // --------------------------------------
+
+        const duration =
+          Number(song.duration?.seconds || 0);
+
+        if (
+          duration <= 0
+        ) {
+          await msg.react("❌");
+
+          await msg.reply(
+            "❌ Unable to determine song duration."
+          );
+
+          return;
+        }
+
+        if (
+          duration > MAX_DURATION_SECONDS
+        ) {
+          await msg.react("❌");
+
+          await msg.reply(
+            `❌ Song is too long.\n\n` +
+            `Duration: ${song.duration.timestamp}\n` +
+            `Limit: ${MAX_DURATION_SECONDS / 60} minutes.`
+          );
+
+          return;
+        }
+
+        // --------------------------------------
+        // DOWNLOAD
+        // --------------------------------------
+
+        await msg.react("⬇️");
+
+        console.log(
+          `⬇️ Downloading: ${song.title}`
+        );
+
+        filePath =
+          await downloadMp3(song.url);
+
+        if (!filePath) {
+          throw new Error(
+            "Downloader did not return a file path."
+          );
+        }
+
+        // --------------------------------------
+        // FILE EXISTS
+        // --------------------------------------
+
+        if (
+          !fs.existsSync(filePath)
+        ) {
+          throw new Error(
+            "Downloaded file does not exist."
+          );
+        }
+
+        // --------------------------------------
+        // FILE SIZE
+        // --------------------------------------
+
+        const stats =
+          fs.statSync(filePath);
+
+        const sizeMB =
+          stats.size /
+          (1024 * 1024);
+
+        console.log(
+          `📦 File size: ${sizeMB.toFixed(2)} MB`
+        );
+
+        if (
+          stats.size >
+          MAX_FILE_SIZE_BYTES
+        ) {
+          await msg.react("❌");
+
+          await msg.reply(
+            `❌ File is too large.\n\n` +
+            `Size: ${sizeMB.toFixed(2)} MB\n` +
+            `Limit: ${MAX_FILE_SIZE_MB} MB`
+          );
+
+          return;
+        }
+
+        // --------------------------------------
+        // SEND
+        // --------------------------------------
 
         await msg.react("✅");
 
-        const media = MessageMedia.fromFilePath(filePath);
+        console.log(
+          `📤 Sending: ${song.title}`
+        );
+
+        const media =
+          MessageMedia.fromFilePath(
+            filePath
+          );
+
         try {
-          await msg.reply(media);
-        } catch (replyErr) {
-          console.warn("msg.reply failed, falling back to client.sendMessage:", replyErr.message);
-          await client.sendMessage(chatId, media);
+          await msg.reply(media, undefined, {
+            sendAudioAsVoice: false,
+          });
+        } catch (replyError) {
+          console.warn(
+            "⚠️ msg.reply failed:",
+            replyError.message
+          );
+
+          await client.sendMessage(
+            chatId,
+            media
+          );
         }
+
+        console.log(
+          `✅ Sent: ${song.title}`
+        );
+      } catch (error) {
+        console.error(
+          "❌ Play command error:",
+          error
+        );
+
+        try {
+          await msg.react("❌");
+        } catch {}
+
+        try {
+          await msg.reply(
+            "❌ Failed to download or send the song."
+          );
+        } catch {}
       } finally {
-        if (filePath && fs.existsSync(filePath)) {
+        // --------------------------------------
+        // CLEANUP
+        // --------------------------------------
+
+        if (
+          filePath &&
+          fs.existsSync(filePath)
+        ) {
           try {
             fs.unlinkSync(filePath);
-          } catch (cleanupErr) {
-            console.error("Cleanup error:", cleanupErr);
+
+            console.log(
+              "🧹 Temporary MP3 deleted."
+            );
+          } catch (cleanupError) {
+            console.error(
+              "❌ Cleanup error:",
+              cleanupError.message
+            );
           }
         }
       }
+
+      return;
+    }
+
+    // ==========================================
+    // UNKNOWN COMMAND
+    // ==========================================
+
+    const command =
+      body.split(/\s+/)[0];
+
+    if (command.startsWith(".")) {
+      await msg.reply(
+        `❌ Unknown command: ${command}\n\n` +
+        `Type *.menu* to see available commands.`
+      );
     }
   } catch (error) {
-    console.error("Error processing message:", error);
+    console.error(
+      "❌ Error processing message:",
+      error
+    );
   }
 });
 
-app.prepare().then(() => {
-  createServer(async (req, res) => {
-    try {
-      const parsedUrl = parse(req.url, true);
+// ==========================================
+// INITIALIZE
+// ==========================================
 
-      // Health check endpoint for Render/Cloud monitoring
-      if (parsedUrl.pathname === '/health') {
-        res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ status: 'ok', uptime: process.uptime() }));
-        return;
-      }
+console.log(
+  `🚀 Starting ${botName}...`
+);
 
-      // QR Code endpoint for frontend
-      if (parsedUrl.pathname === '/api/qr') {
-        res.setHeader('Content-Type', 'application/json');
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-
-        if (req.method === 'OPTIONS') {
-          res.statusCode = 200;
-          res.end();
-          return;
-        }
-
-        if (currentQr) {
-          try {
-            const qrPngBuffer = qrImage.imageSync(currentQr, { type: "png" });
-            const qrDataUrl = `data:image/png;base64,${qrPngBuffer.toString('base64')}`;
-            res.end(JSON.stringify({ qrUrl: qrDataUrl, status: 'qr' }));
-          } catch (e) {
-            res.end(JSON.stringify({ error: 'Failed to generate QR image' }));
-          }
-        } else {
-          res.end(JSON.stringify({
-            qrUrl: null,
-            status: client.info ? 'ready' : 'initializing',
-            message: client.info ? 'Bot is already authenticated and ready!' : 'Waiting for QR code generation...'
-          }));
-        }
-        return;
-      }
-
-      await handle(req, res, parsedUrl);
-    } catch (err) {
-      console.error('Error occurred handling', req.url, err);
-      res.statusCode = 500;
-      res.end('internal server error');
-    }
-  }).listen(port, "0.0.0.0", () => {
-    console.log(`> Ready on http://0.0.0.0:${port}`);
-  });
-
-  client.initialize().catch(err => {
-    console.error("Failed to initialize WhatsApp client:", err);
-  });
-});
+client.initialize();
