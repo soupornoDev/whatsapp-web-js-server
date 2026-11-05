@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const http = require("http");
 require("dotenv").config({ path: path.join(__dirname, ".env") });
 const qrImage = require("qr-image");
 const nodemailer = require("nodemailer");
@@ -38,16 +39,20 @@ const emailTo = (
   emailUser
 ).trim();
 
+const PORT = parseInt(process.env.PORT, 10) || 3000;
 const MAX_DURATION_SECONDS = 15 * 60;
 const MAX_FILE_SIZE_MB = 20;
 const MAX_FILE_SIZE_BYTES =
   MAX_FILE_SIZE_MB * 1024 * 1024;
 
 let currentQr = null;
-
 const startTime = Date.now();
 
-const authDataPath = path.join(__dirname, ".wwebjs_auth");
+// Persistent session folder (supports Render Persistent Disk via DATA_PATH)
+const authDataPath =
+  process.env.DATA_PATH ||
+  process.env.SESSION_DIR ||
+  path.join(__dirname, ".wwebjs_auth");
 
 // Helper to safely react without breaking execution if reactions fail
 const safeReact = async (msg, emoji) => {
@@ -59,6 +64,155 @@ const safeReact = async (msg, emoji) => {
     // Reactions are non-essential; ignore errors so message processing continues
   }
 };
+
+// ==========================================
+// HTTP SERVER (RENDER HEALTH CHECK & WEB QR)
+// ==========================================
+
+const server = http.createServer((req, res) => {
+  const url = req.url ? req.url.split("?")[0] : "/";
+
+  // Health check endpoint for Render monitoring
+  if (url === "/" || url === "/health") {
+    res.writeHead(200, {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*",
+    });
+    const uptimeSec = Math.floor((Date.now() - startTime) / 1000);
+    const hours = Math.floor(uptimeSec / 3600);
+    const minutes = Math.floor((uptimeSec % 3600) / 60);
+    const seconds = uptimeSec % 60;
+
+    return res.end(
+      JSON.stringify({
+        status: "ok",
+        bot: botName,
+        whatsappStatus: client.info
+          ? "ready"
+          : currentQr
+          ? "waiting_for_qr"
+          : "initializing",
+        uptime: `${hours}h ${minutes}m ${seconds}s`,
+        hasQr: !!currentQr,
+        qrUrl: currentQr ? "/qr" : null,
+      })
+    );
+  }
+
+  // QR Code Image (raw PNG)
+  if (url === "/qr.png") {
+    if (currentQr) {
+      try {
+        const qrPngBuffer = qrImage.imageSync(currentQr, { type: "png" });
+        res.writeHead(200, {
+          "Content-Type": "image/png",
+          "Cache-Control": "no-store, no-cache, must-revalidate",
+        });
+        return res.end(qrPngBuffer);
+      } catch (e) {
+        res.writeHead(500, { "Content-Type": "text/plain" });
+        return res.end("Error generating QR image");
+      }
+    } else {
+      res.writeHead(404, { "Content-Type": "text/plain" });
+      return res.end("QR Code not available or client is already authenticated.");
+    }
+  }
+
+  // QR Web Page for convenient phone scanning in browser
+  if (url === "/qr") {
+    res.writeHead(200, {
+      "Content-Type": "text/html",
+      "Cache-Control": "no-store, no-cache, must-revalidate",
+    });
+
+    if (client.info) {
+      return res.end(`
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="UTF-8">
+          <title>${botName} - Online</title>
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; background: #0f172a; color: #fff; text-align: center; }
+            .card { background: #1e293b; padding: 2.5rem 2rem; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); max-width: 420px; width: 90%; }
+            h1 { color: #22c55e; margin: 0 0 1rem 0; font-size: 1.8rem; }
+            p { color: #94a3b8; line-height: 1.5; margin: 0; }
+          </style>
+        </head>
+        <body>
+          <div class="card">
+            <h1>✅ Bot Online</h1>
+            <p><strong>${botName}</strong> is authenticated and actively listening for commands!</p>
+          </div>
+        </body>
+        </html>
+      `);
+    } else if (currentQr) {
+      return res.end(`
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="UTF-8">
+          <title>${botName} - Scan QR Code</title>
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <meta http-equiv="refresh" content="20">
+          <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; background: #0f172a; color: #fff; text-align: center; }
+            .card { background: #1e293b; padding: 2rem; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); max-width: 420px; width: 90%; }
+            h1 { color: #38bdf8; margin: 0 0 0.5rem 0; font-size: 1.6rem; }
+            p { color: #94a3b8; font-size: 0.95rem; margin: 0.5rem 0 1rem 0; }
+            img { background: #fff; padding: 12px; border-radius: 12px; width: 250px; height: 250px; display: block; margin: 0 auto; }
+            .badge { display: inline-block; background: #334155; color: #cbd5e1; padding: 6px 14px; border-radius: 20px; font-size: 0.8rem; margin-top: 1rem; }
+          </style>
+        </head>
+        <body>
+          <div class="card">
+            <h1>Scan with WhatsApp</h1>
+            <p>Open WhatsApp &gt; Settings &gt; Linked Devices &gt; Link a Device</p>
+            <img src="/qr.png?t=${Date.now()}" alt="WhatsApp QR Code" />
+            <br />
+            <span class="badge">🔄 Auto-refreshes every 20 seconds</span>
+          </div>
+        </body>
+        </html>
+      `);
+    } else {
+      return res.end(`
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="UTF-8">
+          <title>${botName} - Starting</title>
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <meta http-equiv="refresh" content="5">
+          <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; background: #0f172a; color: #fff; text-align: center; }
+            .card { background: #1e293b; padding: 2.5rem 2rem; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); max-width: 420px; width: 90%; }
+            h1 { color: #f59e0b; margin: 0 0 1rem 0; font-size: 1.6rem; }
+            p { color: #94a3b8; margin: 0; }
+          </style>
+        </head>
+        <body>
+          <div class="card">
+            <h1>⏳ Initializing...</h1>
+            <p>Starting WhatsApp client. The QR code will appear here shortly.</p>
+          </div>
+        </body>
+        </html>
+      `);
+    }
+  }
+
+  res.writeHead(404, { "Content-Type": "text/plain" });
+  res.end("Not Found");
+});
+
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`🌐 HTTP health server listening on 0.0.0.0:${PORT}`);
+  console.log(`👉 Open http://localhost:${PORT}/qr to view the QR code in browser`);
+});
 
 // ==========================================
 // WHATSAPP CLIENT
@@ -86,6 +240,7 @@ const client = new Client({
       "--no-first-run",
       "--no-zygote",
       "--disable-gpu",
+      "--single-process",
     ],
   },
 });

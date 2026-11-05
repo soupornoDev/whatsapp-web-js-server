@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: whatsapp-music-bot
+    runtime: docker
+    plan: free
+    region: oregon
+    healthCheckPath: /health
+    envVars:
+      - key: BOT_NAME
+        value: Rose Bot
+      - key: GMAIL_USER
+        sync: false
+      - key: GMAIL_APP_PASSWORD
+        sync: false
+      - key: TO_EMAIL
+        sync: false
+      - key: PORT
+        value: 3000
