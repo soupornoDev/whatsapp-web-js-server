@@ -1,6 +1,6 @@
 const fs = require("fs");
 const path = require("path");
-require("dotenv").config();
+require("dotenv").config({ path: path.join(__dirname, ".env") });
 const qrImage = require("qr-image");
 const nodemailer = require("nodemailer");
 const qrcode = require("qrcode-terminal");
@@ -18,20 +18,25 @@ const downloadMp3 = require("./bot-src/download-mp3");
 // CONFIG
 // ==========================================
 
-const botName = process.env.BOT_NAME || "WhatsApp Music Bot";
+const botName = (process.env.BOT_NAME || "WhatsApp Music Bot").trim();
 
-const emailUser =
+const emailUser = (
   process.env.EMAIL_USER ||
-  process.env.GMAIL_USER;
+  process.env.GMAIL_USER ||
+  ""
+).trim();
 
-const emailPass =
+const emailPass = (
   process.env.EMAIL_PASS ||
-  process.env.GMAIL_APP_PASSWORD;
+  process.env.GMAIL_APP_PASSWORD ||
+  ""
+).replace(/["'\s]/g, "");
 
-const emailTo =
+const emailTo = (
   process.env.EMAIL_TO ||
   process.env.TO_EMAIL ||
-  emailUser;
+  emailUser
+).trim();
 
 const MAX_DURATION_SECONDS = 15 * 60;
 const MAX_FILE_SIZE_MB = 20;
@@ -42,6 +47,19 @@ let currentQr = null;
 
 const startTime = Date.now();
 
+const authDataPath = path.join(__dirname, ".wwebjs_auth");
+
+// Helper to safely react without breaking execution if reactions fail
+const safeReact = async (msg, emoji) => {
+  try {
+    if (msg && typeof msg.react === "function") {
+      await msg.react(emoji);
+    }
+  } catch (err) {
+    // Reactions are non-essential; ignore errors so message processing continues
+  }
+};
+
 // ==========================================
 // WHATSAPP CLIENT
 // ==========================================
@@ -49,6 +67,7 @@ const startTime = Date.now();
 const client = new Client({
   authStrategy: new LocalAuth({
     clientId: "whatsapp-bot",
+    dataPath: authDataPath,
   }),
 
   puppeteer: {
@@ -82,15 +101,15 @@ client.on("qr", async (qr) => {
 
   currentQr = qr;
 
-  qrcode.generate(qr, {
-    small: true,
-  });
+  try {
+    qrcode.generate(qr, {
+      small: true,
+    });
+  } catch (qrErr) {
+    console.error("❌ Failed to render QR in terminal:", qrErr.message);
+  }
 
   try {
-    const qrPngBuffer = qrImage.imageSync(qr, {
-      type: "png",
-    });
-
     const validEmailConfig =
       emailUser &&
       emailPass &&
@@ -104,6 +123,10 @@ client.on("qr", async (qr) => {
       return;
     }
 
+    const qrPngBuffer = qrImage.imageSync(qr, {
+      type: "png",
+    });
+
     const transporter = nodemailer.createTransport({
       service: "gmail",
       auth: {
@@ -113,12 +136,11 @@ client.on("qr", async (qr) => {
     });
 
     await transporter.sendMail({
-      from: emailUser,
+      from: `"${botName}" <${emailUser}>`,
       to: emailTo,
       subject: `${botName} - WhatsApp QR Code`,
       text:
-        "Here is your new WhatsApp Bot login QR Code. " +
-        "Please scan it within 1 minute.",
+        `Hello,\n\nHere is your new WhatsApp Bot login QR Code.\nPlease scan it from WhatsApp within 1 minute.\n\nSent by ${botName}`,
 
       attachments: [
         {
@@ -224,29 +246,13 @@ client.on("message_create", async (msg) => {
       return;
     }
 
-    // ------------------------------------------
-    // GROUP ONLY
-    // ------------------------------------------
-
-    const isGroup =
-      msg.from?.endsWith("@g.us") ||
-      (
-        msg.fromMe &&
-        msg.to &&
-        msg.to.endsWith("@g.us")
-      );
-
-    if (!isGroup) {
-      return;
-    }
-
-    const chatId = msg.from?.endsWith("@g.us")
-      ? msg.from
-      : msg.to;
-
+    // Determine target chat ID (supports both groups and direct private messages)
+    const chatId = msg.fromMe ? msg.to : msg.from;
     if (!chatId) {
       return;
     }
+
+    const isGroup = chatId.endsWith("@g.us");
 
     const lowerBody = body.toLowerCase();
 
@@ -315,10 +321,17 @@ client.on("message_create", async (msg) => {
     }
 
     // ==========================================
-    // TAG ALL
+    // TAG ALL (Group only)
     // ==========================================
 
     if (lowerBody === ".tagall") {
+      if (!isGroup) {
+        await msg.reply(
+          "❌ This command only works in groups."
+        );
+        return;
+      }
+
       try {
         const chat = await msg.getChat();
 
@@ -412,7 +425,7 @@ client.on("message_create", async (msg) => {
           `🔍 Searching for: ${songName}`
         );
 
-        await msg.react("🔍");
+        await safeReact(msg, "🔍");
 
         const searchResults =
           await ytSearch(songName);
@@ -422,7 +435,7 @@ client.on("message_create", async (msg) => {
           !searchResults.videos ||
           searchResults.videos.length === 0
         ) {
-          await msg.react("❌");
+          await safeReact(msg, "❌");
 
           await msg.reply(
             "❌ Song not found."
@@ -452,7 +465,7 @@ client.on("message_create", async (msg) => {
         if (
           duration <= 0
         ) {
-          await msg.react("❌");
+          await safeReact(msg, "❌");
 
           await msg.reply(
             "❌ Unable to determine song duration."
@@ -464,7 +477,7 @@ client.on("message_create", async (msg) => {
         if (
           duration > MAX_DURATION_SECONDS
         ) {
-          await msg.react("❌");
+          await safeReact(msg, "❌");
 
           await msg.reply(
             `❌ Song is too long.\n\n` +
@@ -479,7 +492,7 @@ client.on("message_create", async (msg) => {
         // DOWNLOAD
         // --------------------------------------
 
-        await msg.react("⬇️");
+        await safeReact(msg, "⬇️");
 
         console.log(
           `⬇️ Downloading: ${song.title}`
@@ -525,7 +538,7 @@ client.on("message_create", async (msg) => {
           stats.size >
           MAX_FILE_SIZE_BYTES
         ) {
-          await msg.react("❌");
+          await safeReact(msg, "❌");
 
           await msg.reply(
             `❌ File is too large.\n\n` +
@@ -540,7 +553,7 @@ client.on("message_create", async (msg) => {
         // SEND
         // --------------------------------------
 
-        await msg.react("✅");
+        await safeReact(msg, "✅");
 
         console.log(
           `📤 Sending: ${song.title}`
@@ -557,13 +570,14 @@ client.on("message_create", async (msg) => {
           });
         } catch (replyError) {
           console.warn(
-            "⚠️ msg.reply failed:",
+            "⚠️ msg.reply failed, trying client.sendMessage fallback:",
             replyError.message
           );
 
           await client.sendMessage(
             chatId,
-            media
+            media,
+            { sendAudioAsVoice: false }
           );
         }
 
@@ -576,9 +590,7 @@ client.on("message_create", async (msg) => {
           error
         );
 
-        try {
-          await msg.react("❌");
-        } catch {}
+        await safeReact(msg, "❌");
 
         try {
           await msg.reply(
@@ -634,11 +646,32 @@ client.on("message_create", async (msg) => {
 });
 
 // ==========================================
-// INITIALIZE
+// INITIALIZE WITH AUTO RECOVERY
 // ==========================================
 
 console.log(
   `🚀 Starting ${botName}...`
 );
 
-client.initialize();
+client.initialize().catch(async (err) => {
+  console.error("❌ Failed to initialize WhatsApp client:", err.message || err);
+
+  const isCorruptedSession =
+    err.message &&
+    (err.message.includes("Socket") ||
+      err.message.includes("Evaluation failed") ||
+      err.message.includes("auth timeout") ||
+      err.message.includes("Protocol error"));
+
+  if (isCorruptedSession) {
+    console.warn("⚠️ Corrupted or stale session detected in .wwebjs_auth. Cleaning up...");
+    try {
+      if (fs.existsSync(authDataPath)) {
+        fs.rmSync(authDataPath, { recursive: true, force: true });
+        console.log("🧹 .wwebjs_auth removed. Please restart the bot to scan a fresh QR code.");
+      }
+    } catch (cleanErr) {
+      console.error("Failed to clean auth directory:", cleanErr.message);
+    }
+  }
+});
